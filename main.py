@@ -2,23 +2,45 @@
 Coolify Server Monitor API
 Lightweight system metrics endpoint for remote monitoring.
 """
-from fastapi import FastAPI, Response
+import os
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 import psutil
 import time
 import platform
 from datetime import datetime
 
-app = FastAPI(title="Server Monitor", version="1.0.0")
+app = FastAPI(title="Server Monitor", version="1.0.0", docs_url=None, redoc_url=None)
 
+# CORS — dashboard origin'ini .env'den al, yoksa wildcard
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["GET"],
     allow_headers=["*"],
 )
 
+# API Key koruması — Coolify'da env olarak set edilecek
+API_KEY = os.getenv("MONITOR_API_KEY", "")
+
 START_TIME = time.time()
+
+
+async def verify_api_key(request: Request):
+    """API key varsa kontrol et, yoksa açık bırak."""
+    if not API_KEY:
+        return
+    key = request.headers.get("X-API-Key") or request.query_params.get("key")
+    if key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+
+@app.get("/")
+def root():
+    """Root path'i metrics'e yönlendir."""
+    return RedirectResponse(url="/health")
 
 
 @app.get("/health")
@@ -26,7 +48,7 @@ def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
 
 
-@app.get("/metrics")
+@app.get("/metrics", dependencies=[Depends(verify_api_key)])
 def metrics():
     cpu_freq = psutil.cpu_freq()
     mem = psutil.virtual_memory()
