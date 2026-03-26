@@ -77,7 +77,22 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+    dc = get_docker()
+    docker_ok = False
+    docker_info = None
+    if dc:
+        try:
+            docker_ok = dc.ping()
+            docker_info = dc.info().get("Containers", 0)
+        except Exception as e:
+            docker_info = str(e)
+    return {
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat(),
+        "docker_available": docker_ok,
+        "docker_containers": docker_info,
+        "docker_socket_exists": os.path.exists("/var/run/docker.sock"),
+    }
 
 
 @app.get("/metrics", dependencies=[Depends(verify_api_key)])
