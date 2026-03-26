@@ -14,11 +14,19 @@ from datetime import datetime
 
 app = FastAPI(title="Server Monitor", version="1.0.0", docs_url=None, redoc_url=None)
 
-# Docker client — host socket'e bağlanır
-try:
-    docker_client = docker.from_env()
-except Exception:
-    docker_client = None
+# Docker client — lazy init
+_docker_client = None
+
+def get_docker():
+    """Docker client'ı lazy olarak başlat."""
+    global _docker_client
+    if _docker_client is None:
+        try:
+            _docker_client = docker.from_env()
+            _docker_client.ping()  # bağlantıyı test et
+        except Exception:
+            _docker_client = None
+    return _docker_client
 
 # CORS — dashboard origin'ini .env'den al, yoksa wildcard
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
@@ -136,11 +144,11 @@ def _calc_cpu_percent(stats: dict) -> float:
 @app.get("/containers", dependencies=[Depends(verify_api_key)])
 def containers():
     """Docker container stats — docker stats benzeri çıktı."""
-    if not docker_client:
+    if not get_docker():
         return {"timestamp": datetime.utcnow().isoformat(), "count": 0, "containers": []}
 
     result = []
-    for c in docker_client.containers.list(all=True):
+    for c in get_docker().containers.list(all=True):
         info = {
             "id": c.short_id,
             "name": c.name,
@@ -181,16 +189,16 @@ def containers():
 @app.get("/containers/{container_id}/logs", dependencies=[Depends(verify_api_key)])
 def container_logs(container_id: str, tail: int = 100):
     """Container loglarını döndür. tail parametresi ile son N satır."""
-    if not docker_client:
+    if not get_docker():
         raise HTTPException(status_code=503, detail="Docker not available")
 
     # container_id veya name ile bul
     try:
-        container = docker_client.containers.get(container_id)
+        container = get_docker().containers.get(container_id)
     except docker.errors.NotFound:
         # İsimle ara
         found = None
-        for c in docker_client.containers.list(all=True):
+        for c in get_docker().containers.list(all=True):
             if container_id in c.name or container_id == c.short_id:
                 found = c
                 break
