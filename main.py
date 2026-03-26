@@ -137,7 +137,7 @@ def _calc_cpu_percent(stats: dict) -> float:
 def containers():
     """Docker container stats — docker stats benzeri çıktı."""
     if not docker_client:
-        raise HTTPException(status_code=503, detail="Docker not available")
+        return {"timestamp": datetime.utcnow().isoformat(), "count": 0, "containers": []}
 
     result = []
     for c in docker_client.containers.list(all=True):
