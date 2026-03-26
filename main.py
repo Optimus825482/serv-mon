@@ -34,6 +34,23 @@ API_KEY = os.getenv("MONITOR_API_KEY", "")
 
 START_TIME = time.time()
 
+# Container friendly names — Coolify container ID → okunabilir isim
+CONTAINER_LABELS = {
+    "web-i8w8w0g8o8kw48c4wcsc4owk": "MINIBAR",
+    "backend-z400og88sk08so80ss8o4844": "EVENTFLOW",
+    "app-e480kocw4s88ckc8wcsowsoc": "ROYAL CABANA",
+    "app-i8ggkoowk4s8okc4gso8kg4w": "AI HABERLERI",
+    "worker-i8ggkoowk4s8okc4gso8kg4w": "AI HABERLERI WORKER",
+}
+
+
+def _get_friendly_name(container_name: str) -> str:
+    """Container adından friendly name döndür."""
+    for key, label in CONTAINER_LABELS.items():
+        if key in container_name:
+            return label
+    return container_name
+
 
 async def verify_api_key(request: Request):
     """API key varsa kontrol et, yoksa açık bırak."""
@@ -127,6 +144,7 @@ def containers():
         info = {
             "id": c.short_id,
             "name": c.name,
+            "label": _get_friendly_name(c.name),
             "image": c.image.tags[0] if c.image.tags else c.image.short_id,
             "status": c.status,
             "state": c.attrs.get("State", {}).get("Health", {}).get("Status", c.status),
@@ -158,3 +176,38 @@ def containers():
         result.append(info)
 
     return {"timestamp": datetime.utcnow().isoformat(), "count": len(result), "containers": result}
+
+
+@app.get("/containers/{container_id}/logs", dependencies=[Depends(verify_api_key)])
+def container_logs(container_id: str, tail: int = 100):
+    """Container loglarını döndür. tail parametresi ile son N satır."""
+    if not docker_client:
+        raise HTTPException(status_code=503, detail="Docker not available")
+
+    # container_id veya name ile bul
+    try:
+        container = docker_client.containers.get(container_id)
+    except docker.errors.NotFound:
+        # İsimle ara
+        found = None
+        for c in docker_client.containers.list(all=True):
+            if container_id in c.name or container_id == c.short_id:
+                found = c
+                break
+        if not found:
+            raise HTTPException(status_code=404, detail="Container not found")
+        container = found
+
+    try:
+        logs = container.logs(tail=min(tail, 500), timestamps=True).decode("utf-8", errors="replace")
+        lines = logs.strip().split("\n") if logs.strip() else []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {
+        "container_id": container.short_id,
+        "name": container.name,
+        "label": _get_friendly_name(container.name),
+        "lines": lines,
+        "count": len(lines),
+    }
