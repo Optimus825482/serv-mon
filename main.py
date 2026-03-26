@@ -9,9 +9,16 @@ from fastapi.responses import RedirectResponse
 import psutil
 import time
 import platform
+import docker
 from datetime import datetime
 
 app = FastAPI(title="Server Monitor", version="1.0.0", docs_url=None, redoc_url=None)
+
+# Docker client — host socket'e bağlanır
+try:
+    docker_client = docker.from_env()
+except Exception:
+    docker_client = None
 
 # CORS — dashboard origin'ini .env'den al, yoksa wildcard
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
@@ -92,3 +99,62 @@ def metrics():
             "15min": round(load[2], 2),
         },
     }
+
+
+def _calc_cpu_percent(stats: dict) -> float:
+    """Docker stats'tan CPU yüzdesini hesapla."""
+    try:
+        cpu = stats["cpu_stats"]
+        pre = stats["precpu_stats"]
+        delta = cpu["cpu_usage"]["total_usage"] - pre["cpu_usage"]["total_usage"]
+        sys_delta = cpu["system_cpu_usage"] - pre["system_cpu_usage"]
+        ncpus = cpu.get("online_cpus") or len(cpu["cpu_usage"].get("percpu_usage", [1]))
+        if sys_delta > 0 and delta > 0:
+            return round((delta / sys_delta) * ncpus * 100, 2)
+    except (KeyError, TypeError, ZeroDivisionError):
+        pass
+    return 0.0
+
+
+@app.get("/containers", dependencies=[Depends(verify_api_key)])
+def containers():
+    """Docker container stats — docker stats benzeri çıktı."""
+    if not docker_client:
+        raise HTTPException(status_code=503, detail="Docker not available")
+
+    result = []
+    for c in docker_client.containers.list(all=True):
+        info = {
+            "id": c.short_id,
+            "name": c.name,
+            "image": c.image.tags[0] if c.image.tags else c.image.short_id,
+            "status": c.status,
+            "state": c.attrs.get("State", {}).get("Health", {}).get("Status", c.status),
+        }
+
+        if c.status == "running":
+            try:
+                stats = c.stats(stream=False)
+                mem = stats.get("memory_stats", {})
+                mem_usage = mem.get("usage", 0)
+                mem_limit = mem.get("limit", 1)
+                net = stats.get("networks", {})
+                net_rx = sum(v.get("rx_bytes", 0) for v in net.values())
+                net_tx = sum(v.get("tx_bytes", 0) for v in net.values())
+
+                info.update({
+                    "cpu_percent": _calc_cpu_percent(stats),
+                    "mem_usage_mb": round(mem_usage / (1024**2), 1),
+                    "mem_limit_mb": round(mem_limit / (1024**2), 1),
+                    "mem_percent": round((mem_usage / mem_limit) * 100, 1) if mem_limit else 0,
+                    "net_rx": net_rx,
+                    "net_tx": net_tx,
+                })
+            except Exception:
+                info.update({"cpu_percent": 0, "mem_usage_mb": 0, "mem_limit_mb": 0, "mem_percent": 0, "net_rx": 0, "net_tx": 0})
+        else:
+            info.update({"cpu_percent": 0, "mem_usage_mb": 0, "mem_limit_mb": 0, "mem_percent": 0, "net_rx": 0, "net_tx": 0})
+
+        result.append(info)
+
+    return {"timestamp": datetime.utcnow().isoformat(), "count": len(result), "containers": result}
